@@ -8,7 +8,7 @@
 #   "connect_router": "*"
 #
 # Configuration:
-#   LOG_REDIS_URL: URL to Redis backend to use for logging (uses REDISTOGO_URL 
+#   LOG_REDIS_URL: URL to Redis backend to use for logging (uses REDISTOGO_URL
 #                  if unset, and localhost:6379 if that is unset.
 #   LOG_HTTP_USER: username for viewing logs over HTTP (default 'logs' if unset)
 #   LOG_HTTP_PASS: password for viewing logs over HTTP (default 'changeme' if unset)
@@ -130,7 +130,7 @@ module.exports = (robot) ->
 
       # This is a bit of a hack... KEYS takes O(n) time
       # and shouldn't be used for this, but it's not worth
-      # creating a set just so that we can list all logs 
+      # creating a set just so that we can list all logs
       # for a room.
       client.keys "logs:#{req.params.room}:*", (err, replies) ->
         days = []
@@ -169,14 +169,15 @@ module.exports = (robot) ->
     return if process.env.LOG_STEALTH
     return if msg.match[0] == "#{robot.name} start logging"
     return if msg.match[0] == "#{robot.name} stop logging"
-    if not (robot.logging[msg.message.user.room]?.notified && robot.brain.data
-                                                              .logging[msg.message.user.room]
-                                                              ?.enabled)
-      msg.send "I'm logging messages in #{msg.message.user.room} at " +
+    room = formatRoom msg.message.user.room
+    if not (robot.logging[room]?.notified && robot.brain.data
+                                             .logging[room]
+                                             ?.enabled)
+      msg.send "I'm logging messages in #{room} at " +
                  "http://#{OS.hostname()}:#{process.env.LOG_HTTP_PORT || 8081}/" +
-                 "logs/#{msg.message.user.room}/#{date_id()}\n" +
+                 "logs/#{room}/#{date_id()}\n" +
                  "Say `#{robot.name} stop logging forever' to disable logging indefinitely."
-      robot.logging[msg.message.user.room] = { notified: true }
+      robot.logging[room] = { notified: true }
 
   # Enable logging
   robot.respond /start logging( messages)?$/i, (msg) ->
@@ -202,20 +203,22 @@ module.exports = (robot) ->
 
   # PM logs to people who request them
   robot.respond /(message|send) me (all|the|today'?s) logs?$/i, (msg) ->
-    get_logs_for_day client, new Date(), msg.message.user.room, (logs) ->
+    room = formatRoom msg.message.user.room
+    get_logs_for_day client, new Date(), room, (logs) ->
       if logs.length == 0
         msg.reply "I don't have any logs saved for today."
         return
 
       logs_formatted = format_logs_for_chat(logs)
-      robot.send direct_user(msg.message.user.id, msg.message.user.room), logs_formatted.join("\n")
+      robot.send direct_user(msg.message.user.id, room), logs_formatted.join("\n")
 
   robot.respond /what did I miss\??$/i, (msg) ->
     now = moment()
     before = moment().subtract('m', 10)
-    get_logs_for_range client, before, now, msg.message.user.room, (logs) ->
+    room = formatRoom msg.message.user.room
+    get_logs_for_range client, before, now, room, (logs) ->
       logs_formatted = format_logs_for_chat(logs)
-      robot.send direct_user(msg.message.user.id, msg.message.user.room), logs_formatted.join("\n")
+      robot.send direct_user(msg.message.user.id, room), logs_formatted.join("\n")
 
   robot.respond /what did I miss in the [pl]ast ([0-9]+) (seconds?|minutes?|hours?)\??/i, (msg) ->
     num = parseInt(msg.match[1])
@@ -224,15 +227,16 @@ module.exports = (robot) ->
       return
     now   = moment()
     start = moment().subtract(msg.match[2][0], num)
+    room = formatRoom msg.message.user.room
 
     if now.diff(start, 'days', true) > 1
-      robot.send direct_user(msg.message.user.id, msg.message.user.room),
+      robot.send direct_user(msg.message.user.id, room),
                  "I can only tell you activity for the last 24 hours in a message."
       start = now.sod().subtract('d', 1)
 
-    get_logs_for_range client, start, moment(), msg.message.user.room, (logs) ->
+    get_logs_for_range client, start, moment(), room, (logs) ->
       logs_formatted = format_logs_for_chat(logs)
-      robot.send direct_user(msg.message.user.id, msg.message.user.room), logs_formatted.join("\n")
+      robot.send direct_user(msg.message.user.id, room), logs_formatted.join("\n")
 
 
 ## Logging helpers
@@ -377,7 +381,7 @@ get_logs_for_array = (redis, room, ids, callback) ->
 # Params:
 #   redis - a Redis client object
 #   date  - Date or Moment object representing the date to look up
-#   room  - the room to look up 
+#   room  - the room to look up
 #   callback - function to pass an array of log objects for date to
 get_logs_for_day = (redis, date, room, callback) ->
   get_log redis, room, date_id(date), (reply) ->
@@ -407,19 +411,20 @@ get_logs_for_range = (redis, start, end, room, callback) ->
 #   redis - a Redis client object
 #   response - a Response that can be replied to
 enable_logging = (robot, redis, response) ->
-  if robot.brain.data.logging[response.message.user.room]?.enabled
+  room = formatRoom response.message.user.room
+  if robot.brain.data.logging[room]?.enabled
     response.reply "Logging is already enabled."
     return
-  robot.brain.data.logging[response.message.user.room] ||= {}
-  robot.brain.data.logging[response.message.user.room].enabled = true
-  robot.brain.data.logging[response.message.user.room].pause = null
+  robot.brain.data.logging[room] ||= {}
+  robot.brain.data.logging[room].enabled = true
+  robot.brain.data.logging[room].pause = null
   log_entry(redis, new Entry(robot.name, Date.now(), 'text',
             "#{response.message.user.name || response.message.user.id} restarted logging."),
-            response.message.user.room)
+            room)
 
-  response.reply "I will log messages in #{response.message.user.room} at " +
+  response.reply "I will log messages in #{room} at " +
                  "http://#{OS.hostname()}:#{process.env.LOG_HTTP_PORT || 8081}/" +
-                 "logs/#{response.message.user.room}/#{date_id()} from now on.\n" +
+                 "logs/#{room}/#{date_id()} from now on.\n" +
                  "Say `#{robot.name} stop logging forever' to disable logging indefinitely."
   robot.brain.save()
 
@@ -432,7 +437,8 @@ enable_logging = (robot, redis, response) ->
 #       - a number representing the number of milliseconds until logging should be resumed, or
 #       - 0 or undefined to disable logging indefinitely
 disable_logging = (robot, redis, response, end=0) ->
-  if robot.brain.data.logging[response.message.user.room]?.enabled == false
+  room = formatRoom response.message.user.room
+  if robot.brain.data.logging[room]?.enabled == false
     if robot.brain.data.logging.pause
       pause = robot.brain.data.logging.pause
       response.reply "Logging was already disabled #{pause.time.fromNow()} by " +
@@ -441,8 +447,8 @@ disable_logging = (robot, redis, response, end=0) ->
     else
       response.reply "Logging is currently disabled."
       return
-  robot.brain.data.logging[response.message.user.room] ||= {}
-  robot.brain.data.logging[response.message.user.room].enabled = false
+  robot.brain.data.logging[room] ||= {}
+  robot.brain.data.logging[room].enabled = false
   if end != 0
     if not end instanceof moment
       if end instanceof Date
@@ -455,19 +461,19 @@ disable_logging = (robot, redis, response, end=0) ->
       end: end
     log_entry(redis, new Entry(robot.name, Date.now(), 'text',
               "#{response.message.user.name || response.message.user.id} disabled logging" +
-              " until #{end.format()}."), response.message.user.room)
+              " until #{end.format()}."), room)
 
     # Re-enable logging after the set amount of time
     setTimeout (-> enable_logging(robot, redis, response) if not robot.brain.data
-                                                                  .logging[response.message.user.room]
+                                                                  .logging[room]
                                                                   .enabled),
                   end.diff(moment())
     response.reply "OK, I'll stop logging until #{end.format()}."
     robot.brain.save()
     return
   log_entry(redis, new Entry(robot.name, Date.now(), 'text',
-            "#{response.message.user.name || response.message.user.id} disabled logging indefinitely."), 
-            response.message.user.room)
+            "#{response.message.user.name || response.message.user.id} disabled logging indefinitely."),
+            room)
 
   robot.brain.save()
   msg.reply "OK, I'll stop logging from now on." if msg
@@ -488,7 +494,8 @@ log_entry = (redis, entry, room='general') ->
 #   redis - a Redis client instance
 #   response - a Response object emitted from a Listener
 log_message = (redis, robot, response) ->
-  return if not robot.brain.data.logging[response.message.user.room]?.enabled
+  room = formatRoom response.message.user.room
+  return if not robot.brain.data.logging[room]?.enabled
   if response.message instanceof hubot.TextMessage
     type = 'text'
   else if response.message instanceof hubot.EnterMessage
@@ -497,8 +504,12 @@ log_message = (redis, robot, response) ->
     type = 'part'
   return if process.env.LOG_MESSAGES_ONLY && type != 'text'
   entry = JSON.stringify(new Entry(response.message.user?['id'], Date.now(), type, response.message.text))
-  room = response.message.user.room || 'general'
+  room = room || 'general'
   redis.rpush("logs:#{room}:#{date_id()}", entry)
+
+
+formatRoom = (room) ->
+  return room.replace '#', ''
 
 
 ## Views for the Connect server
